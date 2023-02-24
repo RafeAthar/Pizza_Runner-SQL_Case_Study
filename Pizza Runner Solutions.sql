@@ -81,6 +81,7 @@ If Danny wants to expand his range of pizzas - how would this impact the existin
 	4. column 'order_time' in table 'customer_orders' is of type TIMESTAMP wheras column 'pickup_time' in table 'runner_orders' is a varchar.
 	5. column 'registration_date' in 'runners' table is of type DATE.
 	6. 'topping_id' in pizza_toppings, 'toppings' in pizza_recipes, and 'exclusions' & 'extras' in customer_orders seem related.
+    7. entries in columns 'distance' and 'duration' of table 'runner_order' need to be cleaned. 
 *****/    
 
 use pizza_runner;
@@ -93,7 +94,13 @@ update runner_orders set pickup_time = null where pickup_time in ('null', '');
 update runner_orders set distance = null where distance in ('null', '');
 update runner_orders set duration = null where duration in ('null', '');
 update runner_orders set cancellation = null where cancellation in ('null', '');
-
+alter table runner_orders modify column pickup_time timestamp;
+alter table runner_orders modify column pickup_time timestamp; 
+update runner_orders set distance=replace(distance, 'km', '');
+alter table runner_orders modify column distance float;
+update runner_orders set duration= left(duration, 2);
+alter table runner_orders modify column duration int;
+describe runner_orders;
 
 
 												-- A. Pizza Metrics
@@ -142,13 +149,26 @@ with temp as
 	from customer_orders co
 	join runner_orders ro
 	using (order_id)
-	where ro.cancellation is null )
-select x.customer_id, x.pizzas_with_atleast_1_change,  y.customer_id, y.pizzas_with_no_change from
-(select distinct customer_id, count(*) as pizzas_with_atleast_1_change from temp where exclusions is not null or extras is not null group by customer_id) x
--- join
-, (select distinct customer_id,  count(*) as pizzas_with_no_change from temp where not (exclusions is not null or extras is not null) group by customer_id) y
--- on x.customer_id = y.customer_id
-;
+	where ro.cancellation is null ), 
+    x as
+    (select distinct customer_id, count(*) as pizzas_with_atleast_1_change 
+    from temp 
+    where exclusions is not null or extras is not null 
+    group by customer_id),
+    y as 
+    (select distinct customer_id,  count(*) as pizzas_with_no_change 
+    from temp 
+    where not (exclusions is not null or extras is not null) 
+    group by customer_id)
+-- select * from x right join y using(customer_id);
+-- /**
+select * from
+(	select customer_id, pizzas_with_atleast_1_change, pizzas_with_no_change from x left join y using(customer_id)     -- specify columns order, don't use *. 
+	union
+	select customer_id, pizzas_with_atleast_1_change, pizzas_with_no_change from x right join y using(customer_id)    -- specify columns order. If we use *, MySQl gives different order of columns from above left join query, and hence, union will be wrong. 
+) z
+order by customer_id;
+-- **/
 
 -- 8. How many pizzas were delivered that had both exclusions and extras?
 with temp as
@@ -162,32 +182,115 @@ where exclusions is not null and extras is not null
 ;
 
 -- 9. What was the total volume of pizzas ordered for each hour of the day?
-select *, extract(hour from order_time) as hour_of_day
+select extract(hour from order_time) as hour_of_day, count(pizza_id) as orders_volume
 from customer_orders
 group by hour_of_day
+order by hour_of_day
 ;
 
 -- 10. What was the volume of orders for each day of the week?
-
+select dayofweek(order_time) as day_of_week, count(pizza_id) as orders_volume
+from customer_orders
+group by day_of_week
+order by day_of_week
+;
 
 
 											-- B. Runner and Customer Experience
                                             
 -- 1. How many runners signed up for each 1 week period? (i.e. week starts 2021-01-01)
+
+
 -- 2. What was the average time in minutes it took for each runner to arrive at the Pizza Runner HQ to pickup the order?
+with timing as
+	(select *, timestampdiff(minute, order_time, pickup_time) as arrival_time_mins
+		 from ( 
+		 (select distinct order_id, order_time from customer_orders) co
+		 join
+		 (select distinct order_id, runner_id, pickup_time from runner_orders where pickup_time is not null) ro
+		 using(order_id)
+		 )
+	)
+select runner_id, round(avg(arrival_time_mins),2) as avg_arrival_time_mins 
+from timing 
+group by runner_id
+;
+
 -- 3. Is there any relationship between the number of pizzas and how long the order takes to prepare?
+with temp as 
+	(select *, timestampdiff(minute, order_time, pickup_time) as order_to_pickup_time_mins
+	from customer_orders co
+	join
+	runner_orders ro
+	using(order_id)
+	where pickup_time is not null)
+select order_id, count(1)as npizzas_ordered, round(avg(order_to_pickup_time_mins),0) as order_to_pickup_time_mins
+from temp
+group by order_id
+order by npizzas_ordered desc
+;
+	-- It can be observed that in general, as the number of pizzas ordered is increasing, so the time to prepare them. looks like there is some relation.  
+
+
 -- 4. What was the average distance travelled for each customer?
+with temp as
+	( select * from customer_orders co
+    join
+    runner_orders ro
+    using(order_id)
+    where ro.duration is not null )
+select customer_id, round(avg(distance), 2) as avg_distance_travelled_by_runner_km
+from temp
+group by customer_id
+order by avg_distance_travelled_by_runner_km desc;
+
+
 -- 5. What was the difference between the longest and shortest delivery times for all orders?
+select max(duration) - min(duration) as longest_minus_shortest_delivery from runner_orders;
+
+/**   -- another apporach
+with 
+lt as
+	(select max(duration) as longest_time from runner_orders),
+st as
+	(select min(duration) as shortest_time from runner_orders)
+select lt.longest_time - st.shortest_time as longest_minus_shortest_delivery
+from lt, st;
+**/
+
 -- 6. What was the average speed for each runner for each delivery and do you notice any trend for these values?
+select *, round(distance/duration,2)  -- runner_id, round( avg(distance/duration), 2) as avg_speed  
+from runner_orders
+where duration is not null
+order by duration desc
+-- group by runner_id
+;
+
 -- 7. What is the successful delivery percentage for each runner?
+with temp as
+	( select * from customer_orders co
+    join
+    runner_orders ro
+    using(order_id)
+    -- where ro.duration is not null 
+    )
+select * from temp;
 
 
 
 											-- C. Ingredient Optimisation
 
 -- 1. What are the standard ingredients for each pizza?
+select *
+from pizza_recipes
+;
+
 -- 2. What was the most commonly added extra?
+select extras from customer_orders;
+
 -- 3. What was the most common exclusion?
+select exclusions from customer_orders;
+
 /* 4. Generate an order item for each record in the customers_orders table in the format of one of the following:
 		Meat Lovers
 		Meat Lovers - Exclude Beef
@@ -203,8 +306,45 @@ group by hour_of_day
                                             
 /* 1. If a Meat Lovers pizza costs $12 and Vegetarian costs $10 and there were no charges for changes 
 		- how much money has Pizza Runner made so far if there are no delivery fees?*/
+with temp as
+	(select pizza_id,
+    case when co.pizza_id=1 then 10
+    else 12
+    end as pizza_amount
+    from customer_orders co
+    join
+    runner_orders ro
+    using(order_id)
+    where ro.cancellation is null
+    )
+ select sum(pizza_amount) as money_made
+ from temp;
+        
+        
 /* 2. What if there was an additional $1 charge for any pizza extras?
 		Add cheese is $1 extra */
+        
+-- case1: any number of extras cost 1$ only
+with temp as
+	(select pizza_id, extras,
+    case when co.pizza_id=1 and extras is null then 10
+    when co.pizza_id=1 and extras is not null then 11
+    when co.pizza_id=2 and extras is null then 12
+    else 13
+    end as pizza_amount
+    from customer_orders co
+    join
+    runner_orders ro
+    using(order_id)
+    where ro.cancellation is null
+    )
+ select sum(pizza_amount) as money_made
+ from temp;
+ 
+-- case 2: each extra adds 1$ to amount.
+
+
+        
 /* 3. The Pizza Runner team now wants to add an additional ratings system that allows customers to rate their runner, how would you design an additional table for this new dataset 
 		- generate a schema for this new table and insert your own data for ratings for each successful customer order between 1 to 5. */
 /* 4. Using your newly generated table - can you join all of the information together to form a table which has the following information for successful deliveries?
